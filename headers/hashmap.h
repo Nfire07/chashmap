@@ -3,11 +3,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 /*
     INIT_SIZE is a small prime number 
     that resembles the psize at init_map()
 */
 #define INIT_SIZE 53
+/*
+    LOAD_FACTOR is the percentage of slots that can be
+    occupied before the map doubles its psize
+*/
+#define LOAD_FACTOR 75
 
 typedef struct{
     char* key;
@@ -23,11 +29,11 @@ typedef struct{
 
 
 HashMap* init_map();
-unsigned long hash_func(char* key);
 void free_map(HashMap* hmap,void(*free_func)(void*));
-static size_t calc_index(HashMap* hmap, const char* key);
-static size_t calc_next_index(HashMap* hmap,size_t index);
 void* get(HashMap* hmap, const char* key);
+bool put(HashMap* hmap,const char* key,void* value,size_t esize);
+void print_map(HashMap* hmap,void(*print_func)(void*));
+
 
 
 #endif
