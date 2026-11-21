@@ -1,273 +1,160 @@
 #include "../headers/hashmap.h"
 
-static size_t calc_index(HashMap* hmap, const char* key);
-static unsigned long hash_func(const char* key);
-static size_t calc_next_index(HashMap* hmap,size_t index);
-static int resize(HashMap* hmap);
-static void insert_entry(HashMap* hmap,Entry entry);
+static size_t hash(const char* key, size_t capacity) {
+    size_t hash = 5381;
+    int c;
 
-/*
-    allocates the map
-    @param none
-    @return HashMap*
-*/
-HashMap* init_map(){
-    HashMap* hmap = (HashMap*) malloc(sizeof(HashMap));
-    if(!hmap) return NULL;
-    hmap->psize = INIT_SIZE;
-    hmap->lsize=0;
+    while((c = (unsigned char)*key++))
+        hash = ((hash << 5) + hash) + c;
 
-    hmap->map = (Entry*)calloc(hmap->psize,sizeof(Entry));
-    if(!hmap->map){
-        free(hmap);
+    return hash % capacity;
+}
+
+HashMap init_map(){
+    /* Allocation of the map type */
+    HashMap map = malloc(sizeof(HashMap_t));
+    if(map==NULL){
+        return NULL;
+    }
+    /* Allocation of the linked list of the buckets */
+    map->buckets = calloc(INITIAL_CAPACITY,sizeof(Bucket*));
+    if(map->buckets==NULL){
+        free(map);
         return NULL;
     }
 
-    return hmap;
+    map->capacity=INITIAL_CAPACITY;
+    map->size=0;
+
+    return map;
 }
 
-/*
-    put a value identified by a key into a hashmap
-    if the key is already present its value is replaced
-    @param hmap
-    @param key is the key of the Entry
-    @param value is the value of the Entry
-    @param esize is the sizeof the value 
-    @return true if the key was already defined, false otherwise
-*/
-bool put(HashMap* hmap,const char* key,void* value,size_t esize){
-    if (!hmap || !key || !value) return false;
+static void free_bucket(Bucket* bucket){
+    if(bucket==NULL) return;
 
-    size_t index = calc_index(hmap,key);
-    size_t start = index;
+    Bucket* temp = bucket;
 
-    while (hmap->map[index].key != NULL) {
-        if (strcmp(hmap->map[index].key, key) == 0) {
-            void* new_value = (void*) malloc(esize);
-            if (!new_value) return false;
+    while(temp!=NULL){
+        bucket=temp;
+        bucket=(bucket)->next;
+
+        free(temp->entry->key);
+        free(temp->entry->value);
+        free(temp->entry);
+        free(temp);
+        temp=bucket;
+    }
+
+}
+
+void free_map(HashMap* map) {
+    size_t i;
+
+    if(map == NULL || *map == NULL)
+        return;
+
+    for(i = 0; i < (*map)->capacity; i++)
+        free_bucket((*map)->buckets[i]);
+
+    free((*map)->buckets);
+    free(*map);
+
+    *map = NULL;
+}
+
+bool map_set(HashMap map, const char* key, const void* value, size_t esize){
+    size_t index;
+    Bucket* temp;
+    Entry* entry;
+    void* new_value;
+    char* new_key;
+
+    /* Obtain hash index */
+
+    index = hash(key, map->capacity);
+
+    if(map == NULL || key == NULL ||
+       value == NULL || esize == 0)
+        return false;
+
+    /* Search for the element inside the map */
+
+    for(temp = map->buckets[index]; temp != NULL;temp = temp->next) {
+        if(strcmp(temp->entry->key, key) == 0) {
+
+            /* if the value is already in the map change it */
+
+            new_value = malloc(esize);
+            if(new_value == NULL)
+                return false;
+
             memcpy(new_value, value, esize);
-            free(hmap->map[index].value);
-            hmap->map[index].value = new_value;
-            hmap->map[index].esize = esize;
+
+            free(temp->entry->value);
+            temp->entry->value = new_value;
+            temp->entry->esize = esize;
+
             return true;
-        }        
-        index = calc_next_index(hmap,index);
-        if (index == start){
-            return false;
         }
     }
 
-    if ((hmap->lsize + 1) * 100 >= hmap->psize * LOAD_FACTOR) {
-        if (!resize(hmap)) return false;
-        index = calc_index(hmap,key);
-        while (hmap->map[index].key != NULL) {
-            index = calc_next_index(hmap,index);
-        }
-    }
+    /* if nothing it's found, then allocate a new entry */
 
-    char* new_key = strdup(key);
-    if (!new_key) return false;
-    void* new_value = (void*) malloc(esize);
-    if (!new_value){
-        free(new_key);
+    entry = malloc(sizeof(Entry));
+    if(entry == NULL)
+        return false;
+
+    new_key = malloc(strlen(key) + 1);
+    if(new_key == NULL) {
+        free(entry);
         return false;
     }
-    memcpy(new_value, value, esize);
 
-    hmap->map[index].key = new_key;
-    hmap->map[index].value = new_value;
-    hmap->map[index].esize = esize;
-    hmap->lsize++;
+    strcpy(new_key, key);
 
-    return false;
-}
-
-/*
-    get a value given a key
-    @param hmap
-    @param key is the key of the value
-    @return value
-*/
-void* get(HashMap* hmap, const char* key) {
-    if (!hmap || !key) return NULL;
-
-    size_t index = calc_index(hmap, key);
-    size_t start = index;
-
-    while (hmap->map[index].key != NULL) {
-        if (strcmp(hmap->map[index].key, key) == 0) {
-            return hmap->map[index].value;
-        }
-
-        index = calc_next_index(hmap, index);
-        if (index == start) {
-            return NULL;
-        }
+    entry->value = malloc(esize);
+    if(entry->value == NULL) {
+        free(new_key);
+        free(entry);
+        return false;
     }
 
+    memcpy(entry->value, value, esize);
+
+    entry->key = new_key;
+    entry->esize = esize;
+
+    temp = malloc(sizeof(Bucket));
+    if(temp == NULL) {
+        free(entry->value);
+        free(entry->key);
+        free(entry);
+        return false;
+    }
+
+    temp->entry = entry;
+    temp->next = map->buckets[index];
+
+    map->buckets[index] = temp;
+    map->size++;
+
+    return true;
+
+}
+
+void* map_get(HashMap map,const char* key){
+    Bucket* temp;
+    size_t index = hash(key, map->capacity);
+
+    if(map == NULL || key == NULL)
+        return NULL;
+
+
+    for(temp = map->buckets[index]; temp != NULL;temp = temp->next) {
+        if(strcmp(temp->entry->key, key) == 0) {
+            return temp->entry->value;
+        }
+    }
+    
     return NULL;
 }
-
-
-/*
-    print the map as a markdown table
-    every value is printed by print_func, so the caller decides how
-    the values stored in the map are rendered
-    @param hmap
-    @param print_func prints a single value, NULL to print the raw pointer
-    @return none
-*/
-void print_map(HashMap* hmap,void(*print_func)(void*)){
-    if(!hmap) return;
-
-    printf("| hash | key | value |\n");
-    printf("| ---- | --- | ----- |\n");
-
-    for(size_t i = 0; i < hmap->psize; i++){
-        if(!hmap->map[i].key) continue;
-        printf("| %lu | %s | ",
-               (unsigned long) hash_func(hmap->map[i].key),
-               hmap->map[i].key);
-        if(print_func) print_func(hmap->map[i].value);
-        else printf("%p", hmap->map[i].value);
-        printf(" |\n");
-    }
-}
-
-/*
-    deep free of the map
-    @param hmap
-    @param free_func based on the element of the map
-    @return none
-*/
-void free_map(HashMap* hmap,void(*free_func)(void*)){
-    if(!hmap) return;
-    if(hmap->map){
-        for(size_t i=0;i<hmap->psize;i++){
-            if(hmap->map[i].key){
-                free(hmap->map[i].key);
-                if(hmap->map[i].value)
-                    free_func(hmap->map[i].value);
-            }
-        }
-        free(hmap->map);
-    }
-    free(hmap);
-}
-
-/*
-    hash function(algorithm djb2)
-    @param char* key
-    @return index of the hashmap
-*/
-static unsigned long hash_func(const char* key){
-    unsigned long hash = 5381;
-    int c;
-    while ((c = *key++)) {
-        // hash * 33 + c
-        hash = ((hash << 5) + hash) + c; 
-    }
-    return hash;
-}
-
-/*
-    calculate hash index based on psize
-    @param hmap
-    @param key
-    @return index of the element described by the key
-*/
-static size_t calc_index(HashMap* hmap, const char* key) {
-    if (!hmap || !key) return 0; 
-    size_t raw_hash = hash_func(key);
-    return raw_hash % hmap->psize;
-}
-
-/*
-    calculate next index based on psize
-    @param hmap
-    @param key
-    @return index of the next element
-*/
-static size_t calc_next_index(HashMap* hmap,size_t index){
-    return (index+1) %  hmap->psize;
-}
-
-/*
-    check if a number is prime
-    @param num
-    @return 1 if num is prime, 0 otherwise
-*/
-static int is_prime(size_t num){
-    if(num < 2) return 0;
-    if(num < 4) return 1;
-    if(num % 2 == 0) return 0;
-    for(size_t i = 3; i * i <= num; i += 2)
-        if(num % i == 0) return 0;
-    return 1;
-}
-
-/*
-    find the smallest prime greater than num
-    @param num
-    @return the next prime after num
-*/
-static size_t next_prime(size_t num){
-    size_t candidate = num + 1;
-    while(!is_prime(candidate)) candidate++;
-    return candidate;
-}
-
-/*
-    double the size of the map and reinsert every entry
-    the keys and the values are moved, not copied
-    @param hmap
-    @return 1 on success, 0 if the new map could not be allocated
-*/
-static int resize(HashMap* hmap){
-    if(!hmap) return 0;
-
-    size_t new_psize = next_prime(hmap->psize * 2);
-    Entry* new_map = (Entry*)calloc(new_psize,sizeof(Entry));
-    if(!new_map) return 0;
-
-    Entry* old_map = hmap->map;
-    size_t old_psize = hmap->psize;
-
-    hmap->map = new_map;
-    hmap->psize = new_psize;
-    hmap->lsize = 0;
-
-    for(size_t i = 0; i < old_psize; i++){
-        if(old_map[i].key) insert_entry(hmap, old_map[i]);
-    }
-
-    free(old_map);
-    return 1;
-}
-
-/*
-    place an already allocated Entry into the map
-    used by resize to move the entries
-    @param hmap
-    @param entry is the Entry to move
-    @return none
-*/
-static void insert_entry(HashMap* hmap,Entry entry){
-    size_t index = calc_index(hmap,entry.key);
-    size_t start = index;
-
-    while (hmap->map[index].key != NULL) {
-        index = calc_next_index(hmap,index);
-        if (index == start){
-            free(entry.key);
-            free(entry.value);
-            return;
-        }
-    }
-
-    hmap->map[index] = entry;
-    hmap->lsize++;
-}
-
-
-
